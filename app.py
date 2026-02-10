@@ -27,7 +27,6 @@ assets_data = {
 
 # 3. BARRE LATÉRALE - PARAMÈTRES
 st.sidebar.header("🛡️ Paramètres de Conviction")
-# Liste des 7 critères Boursorama (simulés ici pour l'interface)
 criteres = ["Risque ESG", "Controverse", "Impact Positif", "Impact Négatif", "Exposition", "Management", "Risque Carbone"]
 for c in criteres:
     st.sidebar.slider(f"Poids : {c}", 0, 10, 5)
@@ -41,6 +40,7 @@ tickers = [v['t'] for v in assets_data.values()]
 
 @st.cache_data
 def get_data(tickers_list):
+    # Extraction sur la période demandée : 2015-2025
     df = yf.download(tickers_list, start="2015-01-01", end="2025-01-01")['Adj Close']
     return df
 
@@ -56,20 +56,20 @@ try:
         p_vol = np.sqrt(np.dot(w.T, np.dot(cov_matrix, w)))
         return p_ret, p_vol
 
-    # Fonction à minimiser (Volatilité)
     def min_vol(w):
         return get_stats(w)[1]
 
-    # CONTRAINTES (Format Tuple pour éviter l'erreur ValueError)
-    cons = (
-        {'type': 'eq', 'fun': lambda x: np.sum(x) - 1.0}, # Somme des poids = 1
-        {'type': 'ge', 'fun': lambda x: get_stats(x)[0] - target_return} # Rendement >= Cible
-    )
+    # SYNTAXE UNIVERSELLE POUR LES CONTRAINTES
+    # 'ineq' signifie que la fonction doit être >= 0
+    cons = [
+        {'type': 'eq', 'fun': lambda x: np.sum(x) - 1.0},
+        {'type': 'ineq', 'fun': lambda x: get_stats(x)[0] - target_return} 
+    ]
     
     bounds = tuple((0.0, 1.0) for _ in range(len(tickers)))
     init_guess = [1.0 / len(tickers)] * len(tickers)
 
-    # Lancement de l'optimiseur
+    # Lancement de l'optimiseur avec la méthode SLSQP
     res = minimize(min_vol, init_guess, method='SLSQP', bounds=bounds, constraints=cons)
 
     if res.success:
@@ -83,7 +83,6 @@ try:
         col2.metric("Volatilité", f"{p_vol:.2%}")
         col3.metric("Note ESG", f"{p_esg:.1f}/100")
 
-        # GRAPHIQUE FRONTIÈRE
         st.subheader("📈 Frontière Efficiente de Markowitz")
         
         
@@ -98,16 +97,15 @@ try:
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=sim_vol, y=sim_ret, mode='markers', marker=dict(color='gray', opacity=0.3), name="Portefeuilles"))
         fig.add_trace(go.Scatter(x=[p_vol], y=[p_ret], mode='markers', marker=dict(color='red', size=15, symbol='star'), name="Optimal"))
-        fig.update_layout(xaxis_title="Risque", yaxis_title="Rendement")
+        fig.update_layout(xaxis_title="Risque (Volatilité)", yaxis_title="Rendement Annuel")
         st.plotly_chart(fig, use_container_width=True)
 
-        # TABLEAU D'ALLOCATION
         st.subheader("🎯 Allocation suggérée")
         alloc_df = pd.DataFrame({'Titre': list(assets_data.keys()), 'Poids (%)': (w_opt*100).round(2)})
         st.table(alloc_df.sort_values(by='Poids (%)', ascending=False).T)
 
     else:
-        st.error(f"⚠️ Impossible d'atteindre {target_return_pct}% de rendement. Baissez l'objectif.")
+        st.error(f"⚠️ Impossible d'atteindre {target_return_pct}% de rendement. Baissez l'objectif dans la barre latérale.")
 
 except Exception as e:
-    st.error(f"Erreur technique : {e}")
+    st.error(f"Erreur lors du calcul : {e}")
