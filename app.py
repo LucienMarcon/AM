@@ -4,105 +4,99 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from scipy.optimize import minimize
-from datetime import datetime
 
-# --- CONFIGURATION DE L'INTERFACE ---
-st.set_page_config(page_title="Asset Management Pro - SBF 120", layout="wide")
+st.set_page_config(page_title="SBF 120 Asset Management", layout="wide")
 
-st.title("🏛️ Terminal de Gestion d'Actifs : Optimisation SBF 120")
-st.markdown("""
-*Cette application implémente la théorie moderne du portefeuille de Markowitz pour maximiser le **Ratio de Sharpe**.*
-""")
+# --- INTERFACE ---
+st.title("🏛️ Terminal d'Optimisation de Portefeuille")
+st.markdown("Extraction en temps réel des données du **SBF 120** (Période 2015-2025)")
 
-# --- 1. SÉLECTION DES TITRES ET PARAMÈTRES ---
-st.sidebar.header("⚙️ Paramètres du Portefeuille")
+# 1. BASE DE DONNÉES (Tickers SBF 120 et scores ESG fictifs pour l'exercice)
+assets = {
+    'Air Liquide': {'t': 'AI.PA', 'esg': 85},
+    'Airbus': {'t': 'AIR.PA', 'esg': 72},
+    'BNP Paribas': {'t': 'BNP.PA', 'esg': 68},
+    'Hermès': {'t': 'RMS.PA', 'esg': 80},
+    'Kering': {'t': 'KER.PA', 'esg': 78},
+    'L\'Oréal': {'t': 'OR.PA', 'esg': 88},
+    'LVMH': {'t': 'MC.PA', 'esg': 75},
+    'Safran': {'t': 'SAF.PA', 'esg': 70},
+    'Sanofi': {'t': 'SAN.PA', 'esg': 74},
+    'TotalEnergies': {'t': 'TTE.PA', 'esg': 62}
+}
 
-# Liste suggérée de 10 titres majeurs du SBF 120 / CAC 40
-default_tickers = ['OR.PA', 'MC.PA', 'AIR.PA', 'TTE.PA', 'SAN.PA', 'KER.PA', 'BNP.PA', 'AI.PA', 'EL.PA', 'RMS.PA']
-tickers = st.sidebar.multiselect("Sélectionnez vos 10 actifs :", default_tickers, default=default_tickers)
+st.sidebar.header("Configuration")
+selected_names = st.sidebar.multiselect("Sélectionnez vos 10 actifs", list(assets.keys()), default=list(assets.keys()))
+selected_tickers = [assets[name]['t'] for name in selected_names]
 
-risk_free_rate = st.sidebar.number_input("Taux sans risque (%)", value=2.0) / 100
-
-# --- 2. EXTRACTION DES DONNÉES FINANCIÈRES ---
+# --- 2. EXTRACTION AUTOMATIQUE ---
 @st.cache_data
-def download_data(tickers):
-    # Période de 10 ans comme demandé
-    data = yf.download(tickers, start="2015-01-01", end="2025-01-01")['Adj Close']
-    return data
+def get_data(tickers):
+    # Téléchargement des prix de clôture ajustés
+    df = yf.download(tickers, start="2015-01-01", end="2025-01-01")['Adj Close']
+    return df
 
-if len(tickers) < 2:
-    st.warning("Veuillez sélectionner au moins 2 titres pour optimiser.")
-    st.stop()
+if len(selected_tickers) >= 2:
+    with st.spinner('Extraction des cours de bourse...'):
+        prices = get_data(selected_tickers)
+        # Calcul des rendements mensuels (consigne de l'exercice)
+        returns = prices.resample('ME').last().pct_change().dropna()
 
-with st.spinner('Extraction des données Yahoo Finance en cours...'):
-    prices = download_data(tickers)
-    returns = prices.pct_change().dropna()
+    # --- 3. MATHÉMATIQUES : OPTIMISATION ---
+    mean_ret = returns.mean() * 12 # Annualisé
+    cov_mat = returns.cov() * 12    # Annualisé
 
-# --- 3. FONCTIONS D'OPTIMISATION (Cœur mathématique) ---
-def get_portfolio_metrics(weights, returns):
-    # Rendements annualisés (252 jours de trading)
-    p_return = np.sum(returns.mean() * weights) * 252
-    # Volatilité annualisée
-    p_std = np.sqrt(np.dot(weights.T, np.dot(returns.cov() * 252, weights)))
-    # Ratio de Sharpe
-    sharpe = (p_return - risk_free_rate) / p_std
-    return p_return, p_std, sharpe
+    def portfolio_stats(weights):
+        p_ret = np.sum(mean_ret * weights)
+        p_vol = np.sqrt(np.dot(weights.T, np.dot(cov_mat, weights)))
+        return p_ret, p_vol
 
-# Fonction à MINIMISER (Négatif du Sharpe pour maximiser le Sharpe)
-def negative_sharpe(weights, returns):
-    return -get_portfolio_metrics(weights, returns)[2]
+    # On maximise le Ratio de Sharpe (Rendement / Risque)
+    def min_func_sharpe(weights):
+        r, v = portfolio_stats(weights)
+        return -r / v # On minimise l'opposé pour maximiser
 
-def optimize_portfolio(returns):
-    num_assets = len(returns.columns)
-    args = (returns)
-    constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1}) # Somme des poids = 1
-    bounds = tuple((0, 1) for _ in range(num_assets)) # Pas de vente à découvert
-    initial_guess = num_assets * [1. / num_assets]
+    constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
+    bounds = tuple((0, 1) for _ in range(len(selected_tickers)))
+    init_guess = [1/len(selected_tickers)] * len(selected_tickers)
     
-    optimized = minimize(negative_sharpe, initial_guess, args=args, 
-                         method='SLSQP', bounds=bounds, constraints=constraints)
-    return optimized.x
+    opt_res = minimize(min_func_sharpe, init_guess, method='SLSQP', bounds=bounds, constraints=constraints)
+    opt_weights = opt_res.x
 
-# --- 4. EXÉCUTION DE L'ANALYSE ---
-opt_weights = optimize_portfolio(returns)
-p_ret, p_vol, p_sharpe = get_portfolio_metrics(opt_weights, returns)
+    # --- 4. RÉSULTATS & ESG ---
+    p_ret, p_vol = portfolio_stats(opt_weights)
+    p_esg = sum(opt_weights[i] * assets[selected_names[i]]['esg'] for i in range(len(selected_names)))
 
-# --- 5. AFFICHAGE DES RÉSULTATS ---
-col1, col2, col3 = st.columns(3)
-col1.metric("Rendement Espéré", f"{p_ret:.2%}")
-col2.metric("Volatilité (Risque)", f"{p_vol:.2%}")
-col3.metric("Ratio de Sharpe Max", f"{p_sharpe:.2f}")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Rendement Cible", f"{p_ret:.2%}")
+    col2.metric("Volatilité (Risque)", f"{p_vol:.2%}")
+    col3.metric("Note ESG Portefeuille", f"{p_esg:.1f}/100")
 
-# Tableau des poids optimaux
-st.subheader("🎯 Allocation Optimale du Portefeuille")
-weights_df = pd.DataFrame({'Actif': tickers, 'Poids (%)': (opt_weights * 100).round(2)})
-st.table(weights_df.sort_values(by='Poids (%)', ascending=False).T)
+    # --- 5. FRONTIÈRE EFFICIENTE ---
+    st.subheader("Analyse de la Frontière Efficiente")
+    
+    
 
-# --- 6. GRAPHIQUE DE LA FRONTIÈRE EFFICIENTE ---
-st.subheader("📈 Visualisation de la Frontière Efficiente")
+    # Simulation de portefeuilles pour la frontière
+    sim_vol, sim_ret = [], []
+    for _ in range(1000):
+        w = np.random.random(len(selected_tickers))
+        w /= np.sum(w)
+        r, v = portfolio_stats(w)
+        sim_vol.append(v)
+        sim_ret.append(r)
 
-# Simulation de portefeuilles aléatoires pour le nuage de points
-num_sim = 1000
-sim_results = np.zeros((3, num_sim))
-for i in range(num_sim):
-    w = np.random.random(len(tickers))
-    w /= np.sum(w)
-    r, v, s = get_portfolio_metrics(w, returns)
-    sim_results[0,i] = v
-    sim_results[1,i] = r
-    sim_results[2,i] = s
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=sim_vol, y=sim_ret, mode='markers', marker=dict(color='lightgrey', size=4), name="Possibilités"))
+    fig.add_trace(go.Scatter(x=[p_vol], y=[p_ret], mode='markers+text', text=["Portefeuille Optimal"], 
+                             marker=dict(color='red', size=12), name="Efficient"))
+    fig.update_layout(xaxis_title="Risque (Écart-type)", yaxis_title="Rendement Espéré")
+    st.plotly_chart(fig, use_container_width=True)
 
-fig = go.Figure()
-# Nuage de points
-fig.add_trace(go.Scatter(x=sim_results[0,:], y=sim_results[1,:], mode='markers',
-                         marker=dict(color=sim_results[2,:], colorscale='Viridis', showscale=True, title="Sharpe"),
-                         name="Portefeuilles Simulés"))
-# Point Optimal
-fig.add_trace(go.Scatter(x=[p_vol], y=[p_ret], mode='markers',
-                         marker=dict(color='red', size=15, symbol='star'),
-                         name="Portefeuille Optimal (Max Sharpe)"))
+    # Affichage des poids
+    st.subheader("Allocation détaillée")
+    df_weights = pd.DataFrame({'Actif': selected_names, 'Poids (%)': (opt_weights*100).round(2)})
+    st.table(df_weights.sort_values(by='Poids (%)', ascending=False).T)
 
-fig.update_layout(xaxis_title="Risque (Volatilité)", yaxis_title="Rendement", height=600)
-st.plotly_chart(fig, use_container_width=True)
-
-st.info("💡 **Conseil Oral :** Expliquez au jury que ce portefeuille est le point de tangence entre la 'Capital Market Line' et la frontière efficiente.")
+else:
+    st.info("Veuillez sélectionner au moins 2 actifs.")
