@@ -32,10 +32,16 @@ selected_tickers = [assets[name]['t'] for name in selected_names]
 # --- 2. EXTRACTION AUTOMATIQUE ---
 @st.cache_data
 def get_data(tickers):
-    # Téléchargement des prix de clôture ajustés
-    df = yf.download(tickers, start="2015-01-01", end="2025-01-01")['Adj Close']
-    return df
-
+    # Ajout du paramètre group_by et auto_adjust pour stabiliser l'extraction
+    df = yf.download(tickers, start="2015-01-01", end="2025-01-01", auto_adjust=True)
+    
+    # Sécurité : On vérifie si on a un seul titre ou plusieurs
+    if len(tickers) == 1:
+        return df[['Close']]
+    else:
+        # Dans les nouvelles versions, yfinance peut renvoyer les prix directement
+        # On s'assure de ne récupérer que les colonnes de prix de clôture
+        return df['Close']
 if len(selected_tickers) >= 2:
     with st.spinner('Extraction des cours de bourse...'):
         prices = get_data(selected_tickers)
