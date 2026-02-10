@@ -5,104 +5,111 @@ import numpy as np
 import plotly.graph_objects as go
 from scipy.optimize import minimize
 
-st.set_page_config(page_title="SBF 120 Asset Management", layout="wide")
+st.set_page_config(page_title="Optimiseur SBF 120 Pro", layout="wide")
 
-# --- INTERFACE ---
-st.title("🏛️ Terminal d'Optimisation de Portefeuille")
-st.markdown("Extraction en temps réel des données du **SBF 120** (Période 2015-2025)")
+st.title("🏛️ Terminal de Gestion d'Actifs : Optimisation & ESG")
 
-# 1. BASE DE DONNÉES (Tickers SBF 120 et scores ESG fictifs pour l'exercice)
-assets = {
-    'Air Liquide': {'t': 'AI.PA', 'esg': 85},
-    'Airbus': {'t': 'AIR.PA', 'esg': 72},
-    'BNP Paribas': {'t': 'BNP.PA', 'esg': 68},
-    'Hermès': {'t': 'RMS.PA', 'esg': 80},
-    'Kering': {'t': 'KER.PA', 'esg': 78},
-    'L\'Oréal': {'t': 'OR.PA', 'esg': 88},
-    'LVMH': {'t': 'MC.PA', 'esg': 75},
-    'Safran': {'t': 'SAF.PA', 'esg': 70},
-    'Sanofi': {'t': 'SAN.PA', 'esg': 74},
-    'TotalEnergies': {'t': 'TTE.PA', 'esg': 62}
-}
+# --- 1. CHARGEMENT DES DONNÉES ESG ---
+st.sidebar.header("1. Données Extra-Financières")
+uploaded_file = st.sidebar.file_uploader("Chargez votre fichier Excel ESG", type=["xlsx"])
 
-st.sidebar.header("Configuration")
-selected_names = st.sidebar.multiselect("Sélectionnez vos 10 actifs", list(assets.keys()), default=list(assets.keys()))
-selected_tickers = [assets[name]['t'] for name in selected_names]
-
-# --- 2. EXTRACTION AUTOMATIQUE ---
-@st.cache_data
-def get_data(tickers):
-    # Ajout du paramètre group_by et auto_adjust pour stabiliser l'extraction
-    df = yf.download(tickers, start="2015-01-01", end="2025-01-01", auto_adjust=True)
+if uploaded_file:
+    df_esg = pd.read_excel(uploaded_file)
+    tickers = df_esg['Ticker'].tolist()
     
-    # Sécurité : On vérifie si on a un seul titre ou plusieurs
-    if len(tickers) == 1:
-        return df[['Close']]
-    else:
-        # Dans les nouvelles versions, yfinance peut renvoyer les prix directement
-        # On s'assure de ne récupérer que les colonnes de prix de clôture
-        return df['Close']
-if len(selected_tickers) >= 2:
-    with st.spinner('Extraction des cours de bourse...'):
-        prices = get_data(selected_tickers)
-        # Calcul des rendements mensuels (consigne de l'exercice)
+    # Choix des critères ESG prioritaires
+    criteres = ["Risque ESG", "Niveau de controverse", "Impact positif", "Impact négatif", "Risque d'exposition", "Score de management", "Risque carbone"]
+    selected_criteres = st.sidebar.multiselect("Accentuez votre démarche sur :", criteres, default=criteres)
+    
+    # Calcul d'un score ESG agrégé basé sur la sélection
+    df_esg['Score_Global'] = df_esg[selected_criteres].mean(axis=1)
+
+    # --- 2. EXTRACTION DES DONNÉES BOURSIÈRES (10 ANS) ---
+    @st.cache_data
+    def download_data(list_tickers):
+        data = yf.download(list_tickers, start="2015-01-01", end="2025-01-01")['Adj Close']
+        return data
+
+    with st.spinner('Extraction de 10 ans de données boursières...'):
+        prices = download_data(tickers)
         returns = prices.resample('ME').last().pct_change().dropna()
 
-    # --- 3. MATHÉMATIQUES : OPTIMISATION ---
-    mean_ret = returns.mean() * 12 # Annualisé
-    cov_mat = returns.cov() * 12    # Annualisé
+    # --- 3. PARAMÈTRES D'OPTIMISATION ---
+    st.sidebar.header("2. Objectifs Financiers")
+    target_return = st.sidebar.slider("Rendement annuel espéré (%)", 5.0, 30.0, 15.0) / 100
+
+    # Moyennes et Covariance
+    mean_returns = returns.mean() * 12
+    cov_matrix = returns.cov() * 12
 
     def portfolio_stats(weights):
-        p_ret = np.sum(mean_ret * weights)
-        p_vol = np.sqrt(np.dot(weights.T, np.dot(cov_mat, weights)))
+        p_ret = np.sum(mean_returns * weights)
+        p_vol = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
         return p_ret, p_vol
 
-    # On maximise le Ratio de Sharpe (Rendement / Risque)
-    def min_func_sharpe(weights):
-        r, v = portfolio_stats(weights)
-        return -r / v # On minimise l'opposé pour maximiser
+    # --- 4. OPTIMISATION : RENDEMENT MAXIMUM SOUS CONTRAINTE ---
+    # On minimise la volatilité pour un rendement cible donné
+    def objective(weights):
+        return portfolio_stats(weights)[1]
 
-    constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
-    bounds = tuple((0, 1) for _ in range(len(selected_tickers)))
-    init_guess = [1/len(selected_tickers)] * len(selected_tickers)
-    
-    opt_res = minimize(min_func_sharpe, init_guess, method='SLSQP', bounds=bounds, constraints=constraints)
-    opt_weights = opt_res.x
+    constraints = [
+        {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}, # Somme des poids = 1
+        {'type': 'ge', 'fun': lambda x: portfolio_stats(x)[0] - target_return} # Rendement >= Cible
+    ]
+    bounds = tuple((0, 1) for _ in range(len(tickers)))
+    init_guess = [1/len(tickers)] * len(tickers)
 
-    # --- 4. RÉSULTATS & ESG ---
-    p_ret, p_vol = portfolio_stats(opt_weights)
-    p_esg = sum(opt_weights[i] * assets[selected_names[i]]['esg'] for i in range(len(selected_names)))
+    opt_res = minimize(objective, init_guess, method='SLSQP', bounds=bounds, constraints=constraints)
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Rendement Cible", f"{p_ret:.2%}")
-    col2.metric("Volatilité (Risque)", f"{p_vol:.2%}")
-    col3.metric("Note ESG Portefeuille", f"{p_esg:.1f}/100")
+    if opt_res.success:
+        opt_weights = opt_res.x
+        p_ret, p_vol = portfolio_stats(opt_weights)
+        
+        # Calcul de la note ESG moyenne du portefeuille
+        p_esg_score = np.dot(opt_weights, df_esg['Score_Global'].values)
 
-    # --- 5. FRONTIÈRE EFFICIENTE ---
-    st.subheader("Analyse de la Frontière Efficiente")
-    
-    
+        # --- 5. AFFICHAGE DES RÉSULTATS ---
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Rendement Réalisé", f"{p_ret:.2%}")
+        col2.metric("Volatilité", f"{p_vol:.2%}")
+        col3.metric("Note ESG Moyenne", f"{p_esg_score:.1f}/100")
 
-    # Simulation de portefeuilles pour la frontière
-    sim_vol, sim_ret = [], []
-    for _ in range(1000):
-        w = np.random.random(len(selected_tickers))
-        w /= np.sum(w)
-        r, v = portfolio_stats(w)
-        sim_vol.append(v)
-        sim_ret.append(r)
+        # Graphique Frontière Efficiente
+        st.subheader("📈 Frontière Efficiente et Point Optimal")
+        
+        
+        
+        # Simulation pour le graphique
+        sim_vol, sim_ret = [], []
+        for _ in range(1000):
+            w = np.random.random(len(tickers))
+            w /= np.sum(w)
+            r, v = portfolio_stats(w)
+            sim_vol.append(v)
+            sim_ret.append(r)
 
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=sim_vol, y=sim_ret, mode='markers', marker=dict(color='lightgrey', size=4), name="Possibilités"))
-    fig.add_trace(go.Scatter(x=[p_vol], y=[p_ret], mode='markers+text', text=["Portefeuille Optimal"], 
-                             marker=dict(color='red', size=12), name="Efficient"))
-    fig.update_layout(xaxis_title="Risque (Écart-type)", yaxis_title="Rendement Espéré")
-    st.plotly_chart(fig, use_container_width=True)
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=sim_vol, y=sim_ret, mode='markers', marker=dict(color='lightgrey'), name="Possibilités"))
+        fig.add_trace(go.Scatter(x=[p_vol], y=[p_ret], mode='markers+text', text=["VOTRE CHOIX"], 
+                                 marker=dict(color='red', size=15, symbol='star'), name="Optimal"))
+        st.plotly_chart(fig, use_container_width=True)
 
-    # Affichage des poids
-    st.subheader("Allocation détaillée")
-    df_weights = pd.DataFrame({'Actif': selected_names, 'Poids (%)': (opt_weights*100).round(2)})
-    st.table(df_weights.sort_values(by='Poids (%)', ascending=False).T)
+        # Tableau d'allocation
+        st.subheader("📋 Allocation suggérée")
+        df_weights = pd.DataFrame({'Action': tickers, 'Poids (%)': (opt_weights*100).round(2)})
+        st.table(df_weights.sort_values(by='Poids (%)', ascending=False).reset_index(drop=True))
+
+        # --- 6. EXTRACTION EXCEL ---
+        st.subheader("📥 Exporter les résultats")
+        @st.cache_data
+        def convert_df(df):
+            return df.to_csv(index=False).encode('utf-8')
+
+        csv = convert_df(df_weights)
+        st.download_button("Télécharger l'allocation (CSV)", data=csv, file_name='mon_portefeuille.csv', mime='text/csv')
+
+    else:
+        st.error("Impossible d'atteindre ce rendement avec ces actions. Essayez de baisser l'objectif.")
 
 else:
-    st.info("Veuillez sélectionner au moins 2 actifs.")
+    st.info("👋 Bienvenue ! Commencez par charger votre fichier Excel contenant les tickers et les notes ESG.")
