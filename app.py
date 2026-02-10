@@ -12,6 +12,7 @@ st.title("🏛️ Terminal d'Optimisation de Portefeuille SBF 120")
 st.markdown("Analyse Multi-Critères : Performance Financière (2015-2025) & ESG Boursorama")
 
 # --- 1. BASE DE DONNÉES DES TITRES & ESG ---
+#
 assets_data = {
     'Air Liquide': {'t': 'AI.PA', 'esg': 85},
     'TotalEnergies': {'t': 'TTE.PA', 'esg': 62},
@@ -27,22 +28,20 @@ assets_data = {
 
 # --- 2. INTERACTIVITÉ DANS LA SIDEBAR ---
 st.sidebar.header("🛡️ Paramètres de Conviction")
-
 criteres = ["Risque ESG", "Controverse", "Impact Positif", "Impact Négatif", "Exposition", "Management", "Risque Carbone"]
-selected_weights = {}
 for c in criteres:
-    selected_weights[c] = st.sidebar.slider(f"Importance : {c}", 0, 10, 5)
+    st.sidebar.slider(f"Importance : {c}", 0, 10, 5)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("💰 Objectif de Rendement")
-target_return = st.sidebar.slider("Rendement annuel cible (%)", 5.0, 40.0, 18.0) / 100
+# On limite le rendement max à 30% pour éviter les erreurs de calcul
+target_return = st.sidebar.slider("Rendement annuel cible (%)", 5.0, 30.0, 15.0) / 100
 
 # --- 3. EXTRACTION ET CALCULS ---
 tickers = [v['t'] for v in assets_data.values()]
 
 @st.cache_data
 def load_financial_data(tickers_list):
-    # Extraction 10 ans
     df = yf.download(tickers_list, start="2015-01-01", end="2025-12-31")['Adj Close']
     return df
 
@@ -52,6 +51,7 @@ mean_returns = returns.mean() * 12
 cov_matrix = returns.cov() * 12
 
 # --- 4. OPTIMISATION MATHÉMATIQUE (MARKOWITZ) ---
+#
 def get_port_stats(weights):
     p_ret = np.sum(mean_returns * weights)
     p_vol = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
@@ -60,13 +60,16 @@ def get_port_stats(weights):
 def min_vol_func(weights):
     return get_port_stats(weights)[1]
 
-constraints = [
-    {'type': 'eq', 'fun': lambda x: np.sum(x) - 1},
+# CORRECTION DE LA SYNTAXE DES CONTRAINTES
+constraints = (
+    {'type': 'eq', 'fun': lambda x: np.sum(x) - 1.0},
     {'type': 'ge', 'fun': lambda x: get_port_stats(x)[0] - target_return}
-]
-bounds = tuple((0, 1) for _ in range(len(tickers)))
+)
+bounds = tuple((0.0, 1.0) for _ in range(len(tickers)))
+init_guess = [1.0/len(tickers)] * len(tickers)
 
-res = minimize(min_vol_func, [1/len(tickers)]*len(tickers), method='SLSQP', bounds=bounds, constraints=constraints)
+# Exécution de l'optimiseur
+res = minimize(min_vol_func, init_guess, method='SLSQP', bounds=bounds, constraints=constraints)
 
 # --- 5. AFFICHAGE DES RÉSULTATS ---
 if res.success:
@@ -80,6 +83,11 @@ if res.success:
     col3.metric("Score ESG Portefeuille", f"{p_esg:.1f}/100")
 
     st.subheader("📈 Frontière Efficiente & Votre Position")
+    
+    # 
+
+[Image of efficient frontier]
+
     
     sim_vol, sim_ret = [], []
     for _ in range(1000):
@@ -102,4 +110,4 @@ if res.success:
     st.table(alloc_df.sort_values(by='Poids (%)', ascending=False).T)
 
 else:
-    st.error("⚠️ Rendement impossible à atteindre avec cette volatilité. Essayez de baisser l'objectif (ex: 15%).")
+    st.error(f"⚠️ Impossible de trouver une solution pour un rendement de {target_return:.0%}. Baissez l'objectif dans la barre latérale.")
